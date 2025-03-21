@@ -2,13 +2,26 @@ import discord
 import random
 import time
 import asyncio
+import json
+import aiohttp
 from config import config
 
 class Utils:
     """Utility functions for the bot"""
     
     def __init__(self):
-        pass
+        # Mock USD rates for demo purposes
+        self.usd_rates = {
+            'BTC': 35000,
+            'ETH': 2300,
+            'LTC': 75,
+            'XRP': 0.7,
+            'SOL': 65,
+            'DOGE': 0.08,
+            'BCH': 250,
+            'XMR': 150,
+            'TRX': 0.1
+        }
         
     def is_owner(self, user_id):
         """Check if a user is the bot owner"""
@@ -35,16 +48,25 @@ class Utils:
         return config["isPaused"]
     
     def can_use_bot(self, user_id):
-        """Check if a user can use the bot (not blacklisted and either not in maintenance or whitelisted)"""
+        """Check if a user can use the bot (not blacklisted and either not in maintenance or whitelisted or owner)"""
         if self.is_blacklisted(user_id):
             return False
-        if self.is_in_maintenance() and not self.is_whitelisted(user_id) and not self.is_owner(user_id):
+        
+        # Maintenance mode check - owners can always use the bot
+        if self.is_owner(user_id):
+            return True
+            
+        # In maintenance mode, only whitelisted users can use the bot
+        if self.is_in_maintenance() and not self.is_whitelisted(user_id):
             return False
+            
         return True
     
     def format_currency(self, amount, currency):
         """Format a currency amount for display"""
-        return f"{amount} {currency}"
+        if currency == "USD":
+            return f"${amount:.2f}"
+        return f"{amount:.8f}".rstrip('0').rstrip('.') + f" {currency}"
     
     def generate_swap_id(self):
         """Generate a unique swap ID"""
@@ -56,19 +78,33 @@ class Utils:
     
     def format_swap_record(self, swap):
         """Format a swap record for display"""
+        # Calculate total fees
+        exchange_fee = swap.get('exchangeFee', 0)
+        platform_fee = swap.get('platformFee', 0)
+        total_fee = exchange_fee + platform_fee
+        
         return {
             "id": swap["id"],
             "status": swap["status"],
             "fromAmount": self.format_currency(swap["fromAmount"], swap["fromCurrency"]),
+            "usdAmount": self.format_currency(swap.get("usdAmount", 0), "USD"),
             "toAmount": self.format_currency(swap["toAmount"], swap["toCurrency"]),
-            "fee": f"{swap['fee']}%",
+            "exchangeFee": self.format_currency(swap.get("exchangeFee", 0), swap["toCurrency"]),
+            "platformFee": self.format_currency(swap.get("platformFee", 0), swap["toCurrency"]),
+            "totalFee": self.format_currency(total_fee, swap["toCurrency"]),
+            "exchangeFeePercent": f"{swap.get('exchangeFeePercent', 0)}%",
+            "platformFeePercent": f"{swap.get('platformFeePercent', 0)}%",
+            "totalFeePercent": f"{swap.get('exchangeFeePercent', 0) + swap.get('platformFeePercent', 0)}%",
+            "fee": f"{swap.get('fee', 0)}%",
             "initiatedAt": swap["timestamp"],
             "userId": swap["userId"],
-            "sourceAddress": swap["sourceAddress"],
-            "destinationAddress": swap["destinationAddress"],
+            "sourceAddress": swap.get("sourceAddress", "N/A"),
+            "destinationAddress": swap.get("destinationAddress", "N/A"),
             "confirmations": swap.get("confirmations", 0),
             "requiredConfirmations": swap.get("requiredConfirmations", 0),
-            "exchangeRate": swap["exchangeRate"]
+            "exchangeRate": swap["exchangeRate"],
+            "dexName": swap.get("dexName", "N/A"),
+            "dexTxId": swap.get("dexTxId", "N/A")
         }
     
     async def send_direct_message(self, bot, user_id, message):
@@ -87,6 +123,22 @@ class Utils:
             token["symbol"].lower() == token_symbol.lower()
             for token in config["supportedTokens"]
         )
+    
+    def get_usd_rate(self, currency):
+        """Get USD rate for a currency"""
+        return self.usd_rates.get(currency.upper(), 1.0)
+    
+    def usd_to_crypto(self, usd_amount, currency):
+        """Convert USD to cryptocurrency amount"""
+        rate = self.get_usd_rate(currency)
+        if rate <= 0:
+            return 0
+        return usd_amount / rate
+    
+    def crypto_to_usd(self, crypto_amount, currency):
+        """Convert cryptocurrency to USD amount"""
+        rate = self.get_usd_rate(currency)
+        return crypto_amount * rate
     
     async def get_exchange_rate(self, from_currency, to_currency):
         """Get exchange rate between two currencies (mock implementation)"""
@@ -119,11 +171,21 @@ class Utils:
 
         pair = f"{from_currency}-{to_currency}"
         
+        # Add a small random variation to simulate market movements
+        variation = 1 + (random.random() - 0.5) * 0.02  # +/- 1%
+        
         if pair in mock_rates:
+            base_rate = mock_rates[pair]
+            current_rate = base_rate * variation
+            
+            # Mock exchange fee (0.1% to 0.3%)
+            exchange_fee_percent = random.uniform(0.1, 0.3)
+            
             return {
-                "rate": mock_rates[pair],
+                "rate": current_rate,
                 "source": "MockAPI",
-                "fee": config["defaultFee"]
+                "exchangeFeePercent": exchange_fee_percent,
+                "platformFeePercent": config["defaultFee"]
             }
         
         raise ValueError(f"Exchange rate not available for {pair}")
@@ -138,14 +200,12 @@ class Utils:
         """Calculate the service fee"""
         return amount * (fee_percentage / 100)
     
-    async def meets_minimum_amount(self, amount, currency):
-        """Check if an amount meets the minimum swap requirement"""
-        # In a real implementation, this would convert to USD and check
-        # For this demo, we'll assume 1 unit of any currency is above $1
-        return amount >= 1
+    async def meets_minimum_amount(self, usd_amount):
+        """Check if USD amount meets the minimum swap requirement"""
+        return usd_amount >= config["minimumSwapAmountUSD"]
     
     def create_embed(self, title, description, fields=None, color=0xff9900):
-        """Create embed for Discord messages"""
+        """Create embed for Discord messages with improved styling"""
         if fields is None:
             fields = []
             
@@ -163,6 +223,9 @@ class Utils:
             )
             
         embed.timestamp = discord.utils.utcnow()
-        embed.set_footer(text="CoinKong Bot")
+        
+        # Add a fancy footer with the bot name
+        embed.set_footer(text="🦍 CoinKong Bot | Crypto Swaps Made Simple", 
+                         icon_url="https://cdn.discordapp.com/attachments/1179286008138305617/1191166853750788096/bot_profile_pic.png?ex=65a84c40&is=6595d740&hm=76ce5d4e6cb775a9db3d5e0935b87e97d7a8fc873ac3d37dc5c7c9a001a12f36&")
         
         return embed
