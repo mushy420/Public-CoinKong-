@@ -1,8 +1,13 @@
+
 import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Debug output to check environment variables
+print(f"Environment variables loaded: {list(os.environ.keys())}")
+print(f"OWNER_ID environment variable: {os.getenv('OWNER_ID')}")
 
 # Bot configuration settings
 config = {
@@ -12,7 +17,7 @@ config = {
     "clientId": os.getenv("DISCORD_CLIENT_ID"),  # Set this as an environment variable when deploying
     
     # Service settings
-    "defaultFee": 0.5,  # Default service fee in percentage
+    "defaultFee": 0.5,  # Default platform fee in percentage
     "minimumSwapAmountUSD": 1,  # Minimum swap amount in USD
     
     # Bot state
